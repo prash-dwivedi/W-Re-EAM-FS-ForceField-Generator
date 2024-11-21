@@ -1,0 +1,416 @@
+"""
+W-Re EAM/FS Force Field Generator Script
+========================================
+
+Developed by: Prashant Dwivedi  
+Reference: Yangchun Chen, Yu-Hao Li, Ning Gao, et al., 
+"New interatomic potentials of W, Re and W-Re alloy for radiation defects," 
+J. Nucl. Mater. 502 (2018) 141-153.
+
+Description:
+------------
+This script generates tabulated Embedded Atom Method (EAM) and Finnis-Sinclair (FS) 
+potentials for molecular dynamics (MD) simulations of Tungsten-Rhenium (W-Re) alloy systems. 
+The data and functional forms used for this tabulation are based on the work of Yangchun Chen et al. (2018). 
+The script outputs a `.eam.fs` file that can be directly used in MD simulation engines 
+such as LAMMPS for simulating W-Re alloys under various conditions.
+
+Key Features:
+-------------
+1. **Automated Tabulation**: Converts analytical EAM/FS potentials into the tabulated format required for MD simulations.
+2. **Accurate Force Field Generation**: Employs high-resolution grids for embedding functions, electron density functions, and pair potentials, minimizing interpolation errors.
+3. **Customizable**: Users can extend this script to include other alloy systems by modifying the potential functions.
+4. **Efficient Workflow**: Eliminates manual tabulation, saving time and computational resources.
+
+Instructions:
+-------------
+1. Update the embedding functions, electron density functions, and pair potential functions as needed.
+2. Run the script to generate the `.eam.fs` file.
+3. Use the generated file (`WRe2.eam.fs`) in molecular dynamics simulations in software like LAMMPS.
+
+Dependencies:
+-------------
+- Python 3.x
+- `io` and `os` modules (standard library)
+
+Output:
+-------
+The script generates a `.eam.fs` file containing the tabulated force field data for the W-Re alloy.
+
+Disclaimer:
+-----------
+This script is developed for educational and research purposes. The accuracy of the force field 
+depends on the quality of the potential data provided.
+
+"""
+
+import math
+import os
+import sys
+from io import StringIO
+from builtins import str as text
+
+
+class Potential(object):
+
+  def __init__(self, speciesA, speciesB, potentialFunction):
+    self._speciesA = speciesA
+    self._speciesB = speciesB
+    self._potentialFunction = potentialFunction
+
+  @property
+  def speciesA(self):
+    return self._speciesA
+
+  @property
+  def speciesB(self):
+    return self._speciesB
+
+  def energy(self, r):
+    return self._potentialFunction(r)
+
+  def force(self, r, h = 0.1e-5):
+    r1 = r - (h / 2.0)
+    r2 = r + (h / 2.0)
+
+    dr = r2 -r1
+    dU = self.energy(r2) - self.energy(r1)
+
+    dUdr = -dU / dr
+    return dUdr
+
+class EAMPotential(object):
+
+  def __init__(self,
+              species,
+              atomicNumber,
+              mass,
+              embeddingFunction,
+              electronDensityFunction,
+              latticeConstant = 0.0,
+              latticeType = 'bcc'):
+
+    self.species = species
+    self.atomicNumber = atomicNumber
+    self.mass = mass
+    self.embeddingFunction = embeddingFunction
+    self.electronDensityFunction = electronDensityFunction
+    self.latticeConstant = latticeConstant
+    self.latticeType = latticeType
+
+  def embeddingValue(self, density):
+    return self.embeddingFunction(density)
+
+  def electronDensity(self, separation):
+    return self.electronDensityFunction(separation)
+
+##################################################################
+##################################################################
+def _writeSetFL(
+  nrho, drho,
+  nr, dr,
+  cutoff,
+  eampots,
+  pairpots,
+  comments,
+  out,
+  writeDensityFunction):
+
+  workout = StringIO()
+  _writeSetFLHeader(nrho, drho, nr, dr, cutoff, eampots, comments, workout)
+
+  #Write element block
+  for eampot in eampots:
+    eleblockout = StringIO()
+    _writeSetFLElementHeader(eampot, eleblockout)
+    _writeSetFLEmbeddingFunction(nrho, drho, eampot, eleblockout)
+    writeDensityFunction(eampot, eampots, nr, dr, eleblockout)
+    workout.write(eleblockout.getvalue())
+
+  #Write pair potentials
+  _writeSetFLPairPots(nr, dr, eampots, pairpots, workout)
+
+  #Dump working output file into out
+  out.write(workout.getvalue().encode())
+  
+def _writeSetFLDensityFunctionFinnisSinclair(eampot, eampots, nr, dr, out):
+  workout = StringIO()
+
+  for otherpot in eampots:
+    densFunc = eampot.electronDensityFunction[otherpot.species]
+    _writeDensityFunction(densFunc, nr, dr, workout)
+
+  #Dump into out
+  out.write(workout.getvalue())
+  
+def _writeSetFLHeader(nrho, drho, nr, dr, cutoff, eampots, comments, out):
+  #Line 1-3: comments
+  workout = StringIO()
+
+  newcomments = list(comments)
+  newcomments.extend(['', '', ''])
+  newcomments = newcomments[:3]
+
+  print(text(os.linesep).join(newcomments), file=workout)
+
+  #Line 4: ntypes
+  ntypes = [u"%d" % len(eampots)]
+  typestrings = [ eampot.species for eampot in eampots ]
+  ntypes.extend(typestrings)
+  ntypes = u" ".join(ntypes)
+
+  print(ntypes, file=workout)
+
+  #Line 5: nrho drho nr dr rcutoff
+  numbertemplate = u" %20.16e"
+  templ = u"%%d %s %%d %s %s" % ((numbertemplate,)*3)
+  print(templ % (nrho, drho, nr, dr, cutoff), file=workout)
+
+  #Dump everything into out
+  out.write(workout.getvalue())
+  
+#Writes elementblock header
+def _writeSetFLElementHeader(eampot, out):
+  workout = StringIO()
+  print(u"%d %20.16e %20.16e %s" % (eampot.atomicNumber, eampot.mass, eampot.latticeConstant, eampot.latticeType), file=workout)
+  out.write(workout.getvalue())
+  
+#Writes element block embedding function
+def _writeSetFLEmbeddingFunction(nrho, drho, eampot, out):
+  workout = StringIO()
+  for i in range(nrho):
+    rho = float(i)*drho
+    val = eampot.embeddingFunction(rho)
+    print(u"% 20.16e" % val, file=workout)
+  out.write(workout.getvalue())
+  
+def _writeDensityFunction(func, nr, dr, out):
+  for i in range(nr):
+    r = float(i)*dr
+    val = func(r)
+    print(u"% 20.16e" % val, file=out)
+	
+def _writeSetFLPairPots(nr, dr, eampots, pairpots, out):
+  workout = StringIO()
+
+  def pairkey(a,b):
+    k = [a,b]
+    k.sort()
+    return tuple(k)
+
+  class ZeroPair(object):
+    def energy(self, rij):
+      return 0.0
+  zeroPair = ZeroPair()
+  #Make a dictionary of available pair pots
+  pairpotsdict = {}
+  for pp in pairpots:
+    pairpotsdict[pairkey(pp.speciesA,pp.speciesB)] = pp
+
+  #Make list of required pots
+  for i in range(len(eampots)):
+    for j in range(i+1):
+      k = pairkey(eampots[i].species, eampots[j].species)
+      pp = pairpotsdict.get(k, zeroPair)
+
+      for k in range(nr):
+        r = float(k) * dr
+        val = r * pp.energy(r)
+        print(u"% 20.16e" % val, file=workout)
+  out.write(workout.getvalue())
+  
+####################################################################
+####################################################################
+def writeSetFLFinnisSinclair(
+  nrho, drho,
+  nr, dr,
+  eampots,
+  pairpots,
+  out = sys.stdout,
+  comments = ["", "", ""],
+  cutoff = None):
+
+  if not cutoff:
+    cutoff = nr * dr
+
+  #Specialise _writeSetFL to use _writeSetFLDensityFunctionFinnisSinclar to write multiple density functions
+  _writeSetFL(
+    nrho, drho,
+    nr, dr,
+    cutoff,
+    eampots,
+    pairpots,
+    comments,
+    out,
+    _writeSetFLDensityFunctionFinnisSinclair)
+
+
+#Embedding functions
+def WEmbedFunction(rho):
+  if rho == 0.0: return 0.0
+  return (-1*(rho/0.8928098176946668E-02) ** 0.5)+((0.4724430700345457E-01/0.8928098176946668E-02)*rho) 
+  
+def ReEmbedFunction(rho):
+  if rho == 0.0: return 0.0
+  return (-1*(rho/0.1032547624567184E-01) ** 0.5)+((0.5080717529461719E-01/0.1032547624567184E-01)*rho) 
+
+##########################################################################  
+#Heaviside function
+def H(x):
+  return 0 if x < 0 else 1
+
+#  Density functions
+
+#Ak = [0.157394320944321E+00, 0.256286340126315E+00, 0.113652618869651E+01, 0.121424681568044E+01, -0.596325448809099E+01, 0.132583861458088E+01, 0.102158201513837E+02,0.132127443316801E+03, -0.136815683673490E+02, -0.158146510950533E+03]
+#Rk = [5.3,4.9,4.5,4.1,3.7,3.3,3.0,2.7,2.5,2.4]
+def WWDensityFunction_cal(r):
+  funcs = (float(0.157394320944321E+00*((5.3-r)**3)*H(5.3-r))+
+  float(0.256286340126315E+00*((4.9-r)**3)*H(4.9-r))+
+  float(0.113652618869651E+01*((4.5-r)**3)*H(4.5-r))+
+  float(0.121424681568044E+01*((4.1-r)**3)*H(4.1-r))+
+  float(-0.596325448809099E+01*((3.7-r)**3)*H(3.7-r))+
+  float(0.132583861458088E+01*((3.3-r)**3)*H(3.3-r))+
+  float(0.102158201513837E+02*((3.0-r)**3)*H(3.0-r))+
+  float(0.132127443316801E+03*((2.7-r)**3)*H(2.7-r))+
+  float(-0.136815683673490E+02*((2.5-r)**3)*H(2.5-r))+
+  float(-0.158146510950533E+03*((2.4-r)**3)*H(2.4-r)))
+  return funcs
+  
+def WWDensityFunction(r):
+  funcs = float(0.8928098176946668E-02* WWDensityFunction_cal(r))
+  return funcs
+
+#Ak = [0.985237382995892E+00, -0.199947692011378E+01,0.508531638694275E+01, -0.181599856411676E+01, -0.386903822888978E+01,-0.117208437037924E+01, 0.708185679838769E-00, 0.185272925240220E+03,-0.275576871657117E+03, 0.226219972548473E+03]
+#Rk = [4.9,4.5,4.1,3.8,3.5,3.2,2.9,2.7,2.5,2.4]
+def ReReDensityFunction_cal(r):
+  funcs = (float(0.985237382995892E+00*((4.9-r)**3)*H(4.9-r))+
+  float(-0.199947692011378E+01*((4.5-r)**3)*H(4.5-r))+
+  float(0.508531638694275E+01*((4.1-r)**3)*H(4.1-r))+
+  float(-0.181599856411676E+01*((3.8-r)**3)*H(3.8-r))+
+  float(-0.386903822888978E+01*((3.5-r)**3)*H(3.5-r))+
+  float(-0.117208437037924E+01*((3.2-r)**3)*H(3.2-r))+
+  float(0.708185679838769E-00*((2.9-r)**3)*H(2.9-r))+
+  float(0.185272925240220E+03*((2.7-r)**3)*H(2.7-r))+
+  float(-0.275576871657117E+03*((2.5-r)**3)*H(2.5-r))+
+  float(0.226219972548473E+03*((2.4-r)**3)*H(2.4-r)))
+  return funcs
+  
+def ReReDensityFunction(r):
+  funcs = float(0.1032547624567184E-01* ReReDensityFunction_cal(r))
+  return funcs
+
+#Bk = [0.143200269341469E-01, 0.993456092144462E-02, -0.702829467907214E-01,0.413991996187913E+01]
+#Rk = [4.9,4.0,3.1,2.5]
+def WReDensityFunction(r):
+  funcs = ((0.143200269341469E-01*((4.9-r)**3)*H(4.9-r))+
+  (0.993456092144462E-02*((4.0-r)**3)*H(4.0-r))+
+  (-0.702829467907214E-01*((3.1-r)**3)*H(3.1-r))+
+  (0.413991996187913E+01*((2.5-r)**3)*H(2.5-r)))
+  return funcs
+ 
+########################################################################## 
+
+#Pair potentials
+
+#ak = [0.335024387589958E-01, 0.163033349357780E-01, 0.200272930919956E-01,0.442544764151892E-01, -0.360458890109753E-01, -0.782637369706724E-00,0.198354466486430E-00, 0.339548790839008E-00,0.115329264087981E+01, 0.209267214785968E+01,-0.433898470837892E+01, 0.226278158796390E+01,0.486982659394188E+01, 0.117595527893821E+02,0.426754828593335E+02,-0.150658274191890E+03, 0.128062389467005E+03]
+#rk = [5.3,5.0,4.8,4.6,4.4,4.2,4.0,3.8,3.6,3.4,3.2,3.0,2.8,2.7,2.6,2.5,2.4]
+def ppfuncWW_cal(r):
+  funcs = (float(0.335024387589958E-01*((5.3-r)**3)*H(5.3-r))+
+  float(0.163033349357780E-01*((5.0-r)**3)*H(5.0-r))+
+  float(0.200272930919956E-01*((4.8-r)**3)*H(4.8-r))+
+  float(0.442544764151892E-01*((4.6-r)**3)*H(4.6-r))+
+  float(-0.360458890109753E-01*((4.4-r)**3)*H(4.4-r))+
+  float(-0.782637369706724E-00*((4.2-r)**3)*H(4.2-r))+
+  float(0.198354466486430E-00*((4.0-r)**3)*H(4.0-r))+
+  float(0.339548790839008E-00*((3.8-r)**3)*H(3.8-r))+
+  float(0.115329264087981E+01*((3.6-r)**3)*H(3.6-r))+
+  float(0.209267214785968E+01*((3.4-r)**3)*H(3.4-r))+
+  float(-0.433898470837892E+01*((3.2-r)**3)*H(3.2-r))+
+  float(0.226278158796390E+01*((3.0-r)**3)*H(3.0-r))+
+  float(0.486982659394188E+01*((2.8-r)**3)*H(2.8-r))+
+  float(0.117595527893821E+02*((2.7-r)**3)*H(2.7-r))+
+  float(0.426754828593335E+02*((2.6-r)**3)*H(2.6-r))+
+  float(-0.150658274191890E+03*((2.5-r)**3)*H(2.5-r))+
+  float(0.128062389467005E+03*((2.4-r)**3)*H(2.4-r)))
+  return funcs
+  
+def ppfuncWW(r):
+  funcs = float(ppfuncWW_cal(r)-(2*0.4724430700345457E-01*WWDensityFunction_cal(r)))
+  return funcs
+  
+#ak = [0.595770379726787E-01, -0.484711987882270E-01, -0.109652213718314E-00,-0.410315510883489E-02, -0.138574583022008E-00, 0.413428944917866E-00,0.340306548603778E-00, -0.250510224189427E-00, -0.540850305859432E-00,-0.135653498299661E-00, 0.446211760956630E-00, 0.442194641630830E+01,-0.154393092265007E+01, 0.237130024717419E+02, -0.125654971505844E+02, -0.165857183335557E+02, 0.180581396801872E+01]
+#rk = [5.4,5.1,4.8,4.6,4.4,4.2,4.0,3.8,3.6,3.4,3.2,3.0,2.8,2.7,2.6,2.5,2.4]
+def ppfuncReRe_cal(r):
+  funcs = ((0.595770379726787E-01*((5.4-r)**3)*H(5.4-r))+
+  (-0.484711987882270E-01*((5.1-r)**3)*H(5.1-r))+
+  (-0.109652213718314E-00*((4.8-r)**3)*H(4.8-r))+
+  (-0.410315510883489E-02*((4.6-r)**3)*H(4.6-r))+
+  (-0.138574583022008E-00*((4.4-r)**3)*H(4.4-r))+
+  (0.413428944917866E-00*((4.2-r)**3)*H(4.2-r))+
+  (0.340306548603778E-00*((4.0-r)**3)*H(4.0-r))+
+  (-0.250510224189427E-00*((3.8-r)**3)*H(3.8-r))+
+  (-0.540850305859432E-00*((3.6-r)**3)*H(3.6-r))+
+  (-0.135653498299661E-00*((3.4-r)**3)*H(3.4-r))+
+  (0.446211760956630E-00*((3.2-r)**3)*H(3.2-r))+
+  (0.442194641630830E+01*((3.0-r)**3)*H(3.0-r))+
+  (-0.154393092265007E+01*((2.8-r)**3)*H(2.8-r))+
+  (0.237130024717419E+02*((2.7-r)**3)*H(2.7-r))+
+  (-0.125654971505844E+02*((2.6-r)**3)*H(2.6-r))+
+  (-0.165857183335557E+02*((2.5-r)**3)*H(2.5-r))+
+  (0.180581396801872E+01*((2.4-r)**3)*H(2.4-r)))
+  return funcs
+  
+def ppfuncReRe(r):
+  funcs = float(ppfuncReRe_cal(r)-(2*0.5080717529461719E-01*ReReDensityFunction_cal(r)))
+  return funcs
+  
+#ua = 0.202711025088156E+01
+#ub = 0.394652353081478E+01
+#ra = 0.274215842608393E+01
+#rb = 0.407372241629925E+01
+#rc = 0.274050000000000E+00
+
+def ppfuncWRe(r):
+  funcs = float(0.5*((0.202711025088156E+01* ppfuncWW(r*(0.274215842608393E+01/0.274050000000000E+00)))+
+  (0.394652353081478E+01* ppfuncReRe(r*(0.407372241629925E+01/0.274050000000000E+00)))))
+  return funcs
+  
+  
+def main():
+  # Define list of pair potentials
+  pairPotentials = [
+    Potential('W', 'W', ppfuncWW),
+    Potential('W', 'Re', ppfuncWRe),
+    Potential('Re', 'Re', ppfuncReRe)]
+
+  # Assemble the EAMPotential objects
+  eamPotentials = [
+    #W
+    EAMPotential('W', 74, 183.85, WEmbedFunction,
+      { 'W' : WWDensityFunction,
+        'Re' : WReDensityFunction },
+      latticeConstant = 3.1652,
+      latticeType = 'bcc'),
+    #Re
+    EAMPotential('Re', 75, 186.20, ReEmbedFunction,
+      { 'W': WReDensityFunction,
+        'Re' : ReReDensityFunction},
+      latticeConstant = 2.76,
+      latticeType = 'hcp') ]
+
+  # Number of grid points and cut-offs for tabulation.
+  nrho = 10000
+  drho = 2.00000000000000E-3
+  nr   = 10000
+  dr   = 5.40000000000000E-4
+
+  with open("WRe2.eam.fs", "wb") as outfile:
+    writeSetFLFinnisSinclair(
+      nrho, drho,
+      nr, dr,
+      eamPotentials,
+      pairPotentials,
+      outfile)
+
+if __name__ == '__main__':
+    main()
