@@ -1,7 +1,9 @@
 # W-Re EAM/FS Force Field Generator
 
 ## Overview
-This repository contains a Python script for generating tabulated Finnis-Sinclair (FS) potentials for molecular dynamics (MD) simulations, specifically tailored for the Tungsten-Rhenium (W-Re) alloy system. The script employs the Chen potential to define interatomic interactions and outputs an `.eam.fs` file compatible with MD simulation software like LAMMPS.
+This repository contains a Python script for generating tabulated Finnis-Sinclair (FS) potentials for molecular dynamics (MD) simulations, specifically tailored for the Tungsten-Rhenium (W-Re) alloy system. The script employs the [Yangchun Chen, Yu-Hao Li, Ning Gao, et al., 
+"New interatomic potentials of W, Re and W-Re alloy for radiation defects," 
+J. Nucl. Mater. 502 (2018) 141-153] to define interatomic interactions and outputs an `.eam.fs` file compatible with MD simulation software like LAMMPS.
 
 ## Key Features
 - **Automated Tabulation**: Converts analytical EAM/FS potentials into tabulated formats, simplifying integration into MD simulations.
